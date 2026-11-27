@@ -1,0 +1,62 @@
+﻿{
+    "InstalledAtUtc":  "2026-11-27T05:50:02.0040451Z",
+    "GamePath":  "D:\\SteamLibrary\\steamapps\\common\\Grand Theft Auto V",
+    "GameExeVersion":  "1.0.3889.0",
+    "ScriptHookVVersion":  "3889.0.1158.13",
+    "ShvdnVersion":  "3.7.0-nightly.206",
+    "LemonUiVersion":  "2.2.0.0",
+    "BackupDir":  null,
+    "BackedUpFiles":  [
+
+                      ],
+    "Files":  [
+                  {
+                      "RelPath":  "dinput8.dll",
+                      "Sha256":  "9FD9E02353B7D39FE07B9667F7EA2697229A7F2D0E7D389EB79EB212B1BB181D"
+                  },
+                  {
+                      "RelPath":  "ScriptHookV.dll",
+                      "Sha256":  "126BE57CA9DCA00E471F9DE611766009C900AAD88F89AE6C2926EC62E5AAEB4F"
+                  },
+                  {
+                      "RelPath":  "args.txt",
+                      "Sha256":  "0E08CA288106ADA67AC9FEE4CF146CD7F7DAD40C9CC2C29390541A4993B19332"
+                  },
+                  {
+                      "RelPath":  "commandline.txt",
+                      "Sha256":  "42ED8B4B87D4E65A3D300D2D74D7900967FF378E50488043FA8D31CAFE1F7F9C"
+                  },
+                  {
+                      "RelPath":  "ScriptHookVDotNet-Loader.asi",
+                      "Sha256":  "8DAD390CAEC055787FAC8347470F7209635344D81726079980E47C5ACBC616DF"
+                  },
+                  {
+                      "RelPath":  "ScriptHookVDotNet.dll",
+                      "Sha256":  "67A6FE7BEB69433821BADAAC343422C50FB87958972D151C4C9F35DED36A10F3"
+                  },
+                  {
+                      "RelPath":  "ScriptHookVDotNet2.dll",
+                      "Sha256":  "A1668063BA690D878B7A9519D8B66D05E62A653CFEFBA8E4A739F8490D25AC42"
+                  },
+                  {
+                      "RelPath":  "ScriptHookVDotNet3.dll",
+                      "Sha256":  "B25A8BF04AE5D73332248C5F42C54F8B542FA841C584EC1272C343CA3831F41F"
+                  },
+                  {
+                      "RelPath":  "ScriptHookVDotNet.ini",
+                      "Sha256":  "10380A6B893E2EC0C8B51AB930406DBC7517BD0457FC95E52B9FCBA11D1ED35C"
+                  },
+                  {
+                      "RelPath":  "scripts\\LemonUI.SHVDN3.dll",
+                      "Sha256":  "B52EF80136152ED7AFDF335BD4FF16183977C8E27223AAF5C94A8C16E62E1AEB"
+                  },
+                  {
+                      "RelPath":  "scripts\\StoryModeTrainer.dll",
+                      "Sha256":  "339DBA8925FC03F8467401D9A5174822BFEF2B7382E2D2761049612BDC0D66F3"
+                  },
+                  {
+                      "RelPath":  "scripts\\StoryModeTrainer.ini",
+                      "Sha256":  "74D4346C6606B47ED5D26D38A4629DDA470FCF9D5A6A22CAEA7E4BD9FCA40E68"
+                  }
+              ]
+}

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Windows.Forms;
@@ -600,7 +601,7 @@ namespace StoryModeTrainerMod
                 _persistOnlineVehiclesItem.Checked = _onlineAssets.KeepSpawnedVehiclesPersistent;
                 if (_onlineAssets.ExplicitMpMapsPreference != cfg.OnlineAutoUnlockMpMaps)
                 {
-                    _onlineAssets.SetMpMapsMode(cfg.OnlineAutoUnlockMpMaps, userExplicit: cfg.OnlineAutoUnlockMpMaps);
+                    _onlineAssets.SetMpMapsMode(cfg.OnlineAutoUnlockMpMaps, explicitUserToggle: cfg.OnlineAutoUnlockMpMaps);
                 }
                 _mpMapsModeItem.Checked = _onlineAssets.MpMapsModeEnabled;
             }
