@@ -1,0 +1,6 @@
+c:\Users\Jakob\Desktop\GTA Menu\obj\x64\Release\StoryModeTrainer.csproj.AssemblyReference.cache
+c:\Users\Jakob\Desktop\GTA Menu\obj\x64\Release\StoryModeTrainer.csproj.CoreCompileInputs.cache
+c:\Users\Jakob\Desktop\GTA Menu\build\Release\StoryModeTrainer.dll
+c:\Users\Jakob\Desktop\GTA Menu\build\Release\StoryModeTrainer.pdb
+c:\Users\Jakob\Desktop\GTA Menu\obj\x64\Release\StoryModeTrainer.dll
+c:\Users\Jakob\Desktop\GTA Menu\obj\x64\Release\StoryModeTrainer.pdb
