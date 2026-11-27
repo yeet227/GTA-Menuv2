@@ -473,6 +473,15 @@ namespace StoryModeTrainerMod
         private bool _weatherOverridden;
         private int _nextInviteLockGameTime;
         private int _lastOnlineWarningGameTime = -OnlineWarningCooldownMs;
+        private static bool? _cachedSupportedGlobalBuild;
+        private bool _cachedMpBlockedThisTick;
+        private bool _cleanedUp;
+        private bool _isBusyOperation;
+        private bool _trainerAppliedPedProtections;
+        private int _lastPedProofHandle;
+        private int _lastPedProofMask = -1;
+        private bool _trainerAppliedVehicleGod;
+        private readonly List<Vehicle> _spawnedPersistentVehicles = new List<Vehicle>();
 
         public StoryModeTrainer()
         {
@@ -483,7 +492,6 @@ namespace StoryModeTrainerMod
                     true
                 );
                 _aborted = true;
-                Abort();
                 return;
             }
 
@@ -500,7 +508,7 @@ namespace StoryModeTrainerMod
             _toggleKey = _config.MenuToggleKey;
             _noClipToggleKey = _config.NoClipToggleKey;
 
-            Func<bool> isMpBlocked = () => _aborted || IsMultiplayerOrTransitionActive();
+            Func<bool> isMpBlocked = () => _aborted || _cachedMpBlockedThisTick;
 
             _noClip = new NoClipController(
                 _config.NoClipBaseSpeed,
@@ -556,6 +564,7 @@ namespace StoryModeTrainerMod
                 _vehiclePhysics.AutoRepairCurrentVehicle = cfg.AutoRepairVehicle;
                 _vehAutoRepairItem.Checked = cfg.AutoRepairVehicle;
 
+                _noClip.BaseSpeed = cfg.NoClipBaseSpeed;
                 _noClip.ExitFallShieldEnabled = cfg.NoClipExitFallShield;
                 _noClip.SnapToGroundOnExit = cfg.NoClipSnapToGroundOnExit;
                 _noClipFallShieldItem.Checked = _noClip.ExitFallShieldEnabled;
@@ -571,6 +580,10 @@ namespace StoryModeTrainerMod
                 _godModeItem.Checked = cfg.PlayerGodMode;
                 _vehicleGodModeItem.Checked = cfg.PlayerVehicleGodMode;
                 _neverWantedItem.Checked = cfg.PlayerNeverWanted;
+                if (!cfg.PlayerNeverWanted && Game.MaxWantedLevel == 0)
+                {
+                    Game.MaxWantedLevel = DefaultMaxWantedLevel;
+                }
                 _enhancements.InfiniteAmmoEnabled = cfg.PlayerInfiniteAmmo;
                 _enhancements.InfiniteClipEnabled = cfg.PlayerInfiniteClip;
                 _enhancements.InfiniteSprintEnabled = cfg.PlayerInfiniteSprint;
@@ -585,6 +598,10 @@ namespace StoryModeTrainerMod
 
                 _onlineAssets.KeepSpawnedVehiclesPersistent = cfg.OnlineKeepSpawnedVehiclesPersistent;
                 _persistOnlineVehiclesItem.Checked = _onlineAssets.KeepSpawnedVehiclesPersistent;
+                if (_onlineAssets.ExplicitMpMapsPreference != cfg.OnlineAutoUnlockMpMaps)
+                {
+                    _onlineAssets.SetMpMapsMode(cfg.OnlineAutoUnlockMpMaps, userExplicit: cfg.OnlineAutoUnlockMpMaps);
+                }
                 _mpMapsModeItem.Checked = _onlineAssets.MpMapsModeEnabled;
             }
             finally
@@ -670,6 +687,7 @@ namespace StoryModeTrainerMod
             EnforceStoryModeOnlineLockout();
             if (TryGetMultiplayerOrTransitionReason(out string mpTrigger))
             {
+                _cachedMpBlockedThisTick = true;
                 AttemptCancelOnlineTransition();
                 Notify(
                     $"~r~GTA Online transition blocked & Trainer disabled!~s~ ({mpTrigger}) Exit GTA 5 and run 2-Disable-And-CleanForOnline.bat before playing Online.",
@@ -796,14 +814,21 @@ namespace StoryModeTrainerMod
         /// </summary>
         internal static bool IsSupportedScriptGlobalBuild()
         {
+            if (_cachedSupportedGlobalBuild.HasValue)
+            {
+                return _cachedSupportedGlobalBuild.Value;
+            }
+
             try
             {
-                return Game.FileVersion == SupportedGlobalFileVersion;
+                _cachedSupportedGlobalBuild = Game.FileVersion == SupportedGlobalFileVersion;
             }
             catch
             {
-                return false;
+                _cachedSupportedGlobalBuild = false;
             }
+
+            return _cachedSupportedGlobalBuild.Value;
         }
 
         private void EnforceSelectorOnlineSlotLockout()
@@ -2181,6 +2206,10 @@ namespace StoryModeTrainerMod
                 int hour = (Function.Call<int>(Hash.GET_CLOCK_HOURS) + 1) % 24;
                 int min = Function.Call<int>(Hash.GET_CLOCK_MINUTES);
                 Function.Call(Hash.SET_CLOCK_TIME, hour, min, 0);
+                if (_clockFrozen)
+                {
+                    Function.Call(Hash.PAUSE_CLOCK, true);
+                }
                 Notify(string.Format("~g~Clock set to {0:D2}:{1:D2}.~s~", hour, min));
             };
             _worldMenu.Add(advanceHourBtn);
@@ -2248,6 +2277,7 @@ namespace StoryModeTrainerMod
             _config.DespawnPreviousVehicle = _replacePrevVehicleItem.Checked;
             _config.SpawnMaxUpgraded = _spawnMaxUpgradedItem.Checked;
             _config.AutoRepairVehicle = _vehiclePhysics.AutoRepairCurrentVehicle;
+            _config.NoClipBaseSpeed = _noClip.BaseSpeed;
             _config.NoClipExitFallShield = _noClip.ExitFallShieldEnabled;
             _config.NoClipSnapToGroundOnExit = _noClip.SnapToGroundOnExit;
             _config.HeistProtectTakeByDefault = _heists.ProtectHeistTake;
@@ -2415,7 +2445,15 @@ namespace StoryModeTrainerMod
             if (_suppressUiSync || Game.Player == null) return;
             if (_neverWantedItem.Checked && _wantedLevelItem.SelectedItem > 0)
             {
-                _neverWantedItem.Checked = false;
+                _suppressUiSync = true;
+                try
+                {
+                    _neverWantedItem.Checked = false;
+                }
+                finally
+                {
+                    _suppressUiSync = false;
+                }
                 Game.MaxWantedLevel = DefaultMaxWantedLevel;
             }
 
@@ -2828,6 +2866,8 @@ namespace StoryModeTrainerMod
                 return;
             }
 
+            _cachedMpBlockedThisTick = false;
+
             if (!_welcomeShown && TryGetPlayer(out _))
             {
                 _welcomeShown = true;
@@ -2873,7 +2913,8 @@ namespace StoryModeTrainerMod
                         player,
                         _godModeItem.Checked || _enhancements.IsJumpOrMovementShieldActive,
                         _vehicleGodModeItem.Checked,
-                        _heists.IsHeistShieldedNow
+                        _heists.IsHeistShieldedNow,
+                        suspendMovementInput: _isPromptingInput || _pool.AreAnyVisible
                     );
                     if (wasNoClipActive && !_noClip.IsActive)
                     {
@@ -2888,25 +2929,26 @@ namespace StoryModeTrainerMod
                         _heists.IsHeistShieldedNow
                     );
 
-                    _vehiclePhysics.Tick(player);
-                }
+                    bool noClipControllingVehicle = _noClip.IsActive && player.IsInVehicle() && _noClip.IsControllingEntity(player.CurrentVehicle);
+                    _vehiclePhysics.Tick(player, isNoClipControlling: noClipControllingVehicle);
 
-                bool noClipShielded = _noClip.IsActive || _noClip.IsFallShieldActive;
-                _heists.Tick(player, _godModeItem.Checked, noClipShielded);
-                ApplyPlayerAndVehicleProtections(player);
+                    bool noClipShielded = _noClip.IsActive || _noClip.IsFallShieldActive;
+                    _heists.Tick(player, _godModeItem.Checked, noClipShielded);
+                    ApplyPlayerAndVehicleProtections(player);
+
+                    if (_neverWantedItem.Checked)
+                    {
+                        if (Game.MaxWantedLevel != 0) Game.MaxWantedLevel = 0;
+                        if ((Game.Player?.Wanted?.WantedLevel ?? 0) > 0)
+                        {
+                            SetPlayerWantedLevel(0);
+                        }
+                    }
+                }
             }
             else
             {
                 _vehiclePhysics.Tick(null);
-            }
-
-            if (_neverWantedItem.Checked)
-            {
-                if (Game.MaxWantedLevel != 0) Game.MaxWantedLevel = 0;
-                if ((Game.Player?.Wanted?.WantedLevel ?? 0) > 0)
-                {
-                    SetPlayerWantedLevel(0);
-                }
             }
 
             if (!Game.IsPaused && !_isPromptingInput)
@@ -2932,26 +2974,69 @@ namespace StoryModeTrainerMod
             bool wantNoRagdoll = userGod || noClipActive || noClipFallShield || jumpShield || superSprint;
             bool wantNoDrown = userGod || noClipActive;
 
-            if (player.IsInvincible != wantPedInvincible)
-            {
-                player.IsInvincible = wantPedInvincible;
-            }
-            if (Game.Player != null && Game.Player.IsInvincible != wantPedInvincible)
-            {
-                Game.Player.IsInvincible = wantPedInvincible;
-            }
+            bool anyPedProtection = wantPedInvincible || wantBulletExplosionProof || wantCollisionProof
+                || wantFireProof || wantMeleeProof || wantNoRagdoll || wantNoDrown;
 
-            player.IsBulletProof = wantBulletExplosionProof;
-            player.IsExplosionProof = wantBulletExplosionProof;
-            player.IsCollisionProof = wantCollisionProof;
-            player.IsFireProof = wantFireProof;
-            player.IsMeleeProof = wantMeleeProof;
-            player.CanRagdoll = !wantNoRagdoll;
-            player.DrownsInWater = !wantNoDrown;
-            player.DrownsInSinkingVehicle = !wantNoDrown;
-            if (wantNoRagdoll && player.IsRagdoll)
+            int proofMask = (wantPedInvincible ? 1 : 0)
+                | (wantBulletExplosionProof ? 2 : 0)
+                | (wantCollisionProof ? 4 : 0)
+                | (wantFireProof ? 8 : 0)
+                | (wantMeleeProof ? 16 : 0)
+                | (wantNoRagdoll ? 32 : 0)
+                | (wantNoDrown ? 64 : 0);
+
+            if (anyPedProtection)
             {
-                player.CancelRagdoll();
+                if (player.IsInvincible != wantPedInvincible)
+                {
+                    player.IsInvincible = wantPedInvincible;
+                }
+                if (Game.Player != null && Game.Player.IsInvincible != wantPedInvincible)
+                {
+                    Game.Player.IsInvincible = wantPedInvincible;
+                }
+
+                if (_lastPedProofHandle != player.Handle || _lastPedProofMask != proofMask)
+                {
+                    Function.Call(
+                        Hash.SET_ENTITY_PROOFS,
+                        player.Handle,
+                        wantBulletExplosionProof,
+                        wantFireProof,
+                        wantBulletExplosionProof,
+                        wantCollisionProof,
+                        wantMeleeProof,
+                        false,
+                        false,
+                        false
+                    );
+                    player.CanRagdoll = !wantNoRagdoll;
+                    player.DrownsInWater = !wantNoDrown;
+                    player.DrownsInSinkingVehicle = !wantNoDrown;
+                    _lastPedProofHandle = player.Handle;
+                    _lastPedProofMask = proofMask;
+                }
+
+                if (wantNoRagdoll && player.IsRagdoll)
+                {
+                    player.CancelRagdoll();
+                }
+                _trainerAppliedPedProtections = true;
+            }
+            else if (_trainerAppliedPedProtections)
+            {
+                player.IsInvincible = false;
+                if (Game.Player != null)
+                {
+                    Game.Player.IsInvincible = false;
+                }
+                Function.Call(Hash.SET_ENTITY_PROOFS, player.Handle, false, false, false, false, false, false, false, false);
+                player.CanRagdoll = true;
+                player.DrownsInWater = true;
+                player.DrownsInSinkingVehicle = true;
+                _trainerAppliedPedProtections = false;
+                _lastPedProofHandle = player.Handle;
+                _lastPedProofMask = 0;
             }
 
             bool wantVehInvincible = _vehicleGodModeItem.Checked || noClipActive || noClipFallShield;
@@ -2959,58 +3044,62 @@ namespace StoryModeTrainerMod
             {
                 if (_lastGodVehicle != null && _lastGodVehicle.Handle != veh.Handle)
                 {
-                    if (_lastGodVehicle.Exists())
+                    if (_trainerAppliedVehicleGod && _lastGodVehicle.Exists())
                     {
-                        RestoreVehicleProtectionDefaults(_lastGodVehicle);
+                        RestoreVehicleProtectionDefaults(_lastGodVehicle, restoreTires: true);
                     }
                     _lastGodVehicle = null;
+                    _trainerAppliedVehicleGod = false;
                 }
 
                 if (wantVehInvincible)
                 {
-                    veh.IsInvincible = true;
-                    veh.IsBulletProof = true;
-                    veh.IsExplosionProof = true;
-                    veh.IsFireProof = true;
-                    veh.IsCollisionProof = true;
-                    veh.IsMeleeProof = true;
-                    veh.CanTiresBurst = false;
-                    veh.CanWheelsBreak = false;
-                    veh.CanBeVisiblyDamaged = false;
+                    if (!_trainerAppliedVehicleGod || _lastGodVehicle == null || _lastGodVehicle.Handle != veh.Handle)
+                    {
+                        veh.IsInvincible = true;
+                        Function.Call(Hash.SET_ENTITY_PROOFS, veh.Handle, true, true, true, true, true, false, false, false);
+                        veh.CanTiresBurst = false;
+                        veh.CanWheelsBreak = false;
+                        veh.CanBeVisiblyDamaged = false;
+                        _trainerAppliedVehicleGod = true;
+                    }
+                    _lastGodVehicle = veh;
                 }
-                else if (veh.IsInvincible)
+                else if (_trainerAppliedVehicleGod)
                 {
-                    RestoreVehicleProtectionDefaults(veh);
+                    RestoreVehicleProtectionDefaults(veh, restoreTires: true);
+                    _trainerAppliedVehicleGod = false;
+                    _lastGodVehicle = null;
                 }
-                _lastGodVehicle = veh;
             }
             else if (_lastGodVehicle != null && !noClipActive && !noClipFallShield)
             {
-                if (_lastGodVehicle.Exists())
+                if (_trainerAppliedVehicleGod && _lastGodVehicle.Exists())
                 {
-                    RestoreVehicleProtectionDefaults(_lastGodVehicle);
+                    RestoreVehicleProtectionDefaults(_lastGodVehicle, restoreTires: true);
                 }
                 _lastGodVehicle = null;
+                _trainerAppliedVehicleGod = false;
             }
         }
 
-        private void RestoreVehicleProtectionDefaults(Vehicle vehicle)
+        private void RestoreVehicleProtectionDefaults(Vehicle vehicle, bool restoreTires = true)
         {
             vehicle.IsInvincible = false;
-            vehicle.IsBulletProof = false;
-            vehicle.IsExplosionProof = false;
-            vehicle.IsFireProof = false;
-            vehicle.IsCollisionProof = false;
-            vehicle.IsMeleeProof = false;
+            Function.Call(Hash.SET_ENTITY_PROOFS, vehicle.Handle, false, false, false, false, false, false, false, false);
             vehicle.CanWheelsBreak = true;
             vehicle.CanBeVisiblyDamaged = true;
-            vehicle.CanTiresBurst = !_bulletproofTiresItem.Checked;
+            if (restoreTires)
+            {
+                vehicle.CanTiresBurst = true;
+            }
         }
 
         private void OnKeyDown(object sender, KeyEventArgs e)
         {
             if (_aborted
                 || _isPromptingInput
+                || _isBusyOperation
                 || Game.IsPaused
                 || IsMultiplayerOrTransitionActive()
                 || (e.Modifiers & (Keys.Control | Keys.Alt)) != Keys.None)
@@ -3046,7 +3135,13 @@ namespace StoryModeTrainerMod
 
         private void CleanupBeforeAbort()
         {
+            if (_cleanedUp)
+            {
+                return;
+            }
+            _cleanedUp = true;
             _aborted = true;
+            _cachedMpBlockedThisTick = true;
             _pool.HideAll();
 
             Ped player;
@@ -3055,8 +3150,10 @@ namespace StoryModeTrainerMod
             // Warp back onto safe Los Santos ground BEFORE unloading off-map, Superyacht, or interior MP IPLs.
             if (hasPlayer && _onlineAssets.HasAnyMapLoaded && _onlineAssets.IsPlayerInAnyLoadedDlcMap(player))
             {
+                Vector3 safeCoords = OnlineAssetsController.SafeLosSantosReturnCoords;
+                Function.Call(Hash.REQUEST_COLLISION_AT_COORD, safeCoords.X, safeCoords.Y, safeCoords.Z);
                 Entity safeTarget = TryGetCurrentVehicle(out Vehicle veh) ? (Entity)veh : player;
-                safeTarget.PositionNoOffset = OnlineAssetsController.SafeLosSantosReturnCoords;
+                safeTarget.PositionNoOffset = safeCoords;
                 safeTarget.Velocity = Vector3.Zero;
             }
 
@@ -3096,24 +3193,38 @@ namespace StoryModeTrainerMod
                 Game.Player.IsInvincible = false;
             }
 
-            if (_lastGodVehicle != null && _lastGodVehicle.Exists())
+            _suppressUiSync = true;
+            try
             {
                 _bulletproofTiresItem.Checked = false;
-                RestoreVehicleProtectionDefaults(_lastGodVehicle);
+            }
+            finally
+            {
+                _suppressUiSync = false;
+            }
+
+            if (_trainerAppliedVehicleGod && _lastGodVehicle != null && _lastGodVehicle.Exists())
+            {
+                RestoreVehicleProtectionDefaults(_lastGodVehicle, restoreTires: true);
             }
             _lastGodVehicle = null;
-
-            if (TryGetCurrentVehicle(out Vehicle currentVeh))
-            {
-                _bulletproofTiresItem.Checked = false;
-                RestoreVehicleProtectionDefaults(currentVeh);
-            }
+            _trainerAppliedVehicleGod = false;
 
             if (_lastSpawnedVehicle != null && _lastSpawnedVehicle.Exists())
             {
                 _lastSpawnedVehicle.IsPersistent = false;
             }
             _lastSpawnedVehicle = null;
+
+            for (int i = 0; i < _spawnedPersistentVehicles.Count; i++)
+            {
+                Vehicle tracked = _spawnedPersistentVehicles[i];
+                if (tracked != null && tracked.Exists())
+                {
+                    tracked.IsPersistent = false;
+                }
+            }
+            _spawnedPersistentVehicles.Clear();
 
             if (_neverWantedItem.Checked)
             {
@@ -3198,6 +3309,11 @@ namespace StoryModeTrainerMod
                         WaitWithOnlineGuard(0);
                         if (_aborted || IsMultiplayerOrTransitionActive() || !target.Exists())
                         {
+                            if (target.Exists())
+                            {
+                                target.PositionNoOffset = prevPos;
+                                target.Velocity = Vector3.Zero;
+                            }
                             return false;
                         }
                     }
@@ -3223,7 +3339,7 @@ namespace StoryModeTrainerMod
                     {
                         int sceneStartMs = Game.GameTime;
                         while (!Function.Call<bool>(Hash.IS_NEW_LOAD_SCENE_LOADED)
-                            && unchecked(Game.GameTime - sceneStartMs) < 2500)
+                            && unchecked((uint)(Game.GameTime - sceneStartMs)) < 2500u)
                         {
                             Function.Call(Hash.REQUEST_COLLISION_AT_COORD, destination.X, destination.Y, destination.Z);
                             Function.Call(Hash.REQUEST_ADDITIONAL_COLLISION_AT_COORD, destination.X, destination.Y, destination.Z);
@@ -3523,9 +3639,10 @@ namespace StoryModeTrainerMod
                 return;
             }
 
+            _isBusyOperation = true;
             try
             {
-                model.Request(1500);
+                model.Request();
                 int deadline = Game.GameTime + 3000;
                 while (!model.IsLoaded)
                 {
@@ -3611,6 +3728,11 @@ namespace StoryModeTrainerMod
                 }
 
                 _lastSpawnedVehicle = veh;
+                if (veh.IsPersistent)
+                {
+                    _spawnedPersistentVehicles.RemoveAll(v => v == null || !v.Exists());
+                    _spawnedPersistentVehicles.Add(veh);
+                }
                 _vehiclePhysics.NotifyVehicleRepairedOrUpgraded();
                 SyncCustomsMenu();
                 Notify(_spawnMaxUpgradedItem.Checked
@@ -3619,6 +3741,7 @@ namespace StoryModeTrainerMod
             }
             finally
             {
+                _isBusyOperation = false;
                 model.MarkAsNoLongerNeeded();
             }
         }

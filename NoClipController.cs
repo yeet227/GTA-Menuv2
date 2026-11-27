@@ -50,15 +50,26 @@ namespace StoryModeTrainerMod
             ControlAction.VehicleFlyThrottleUp,
             ControlAction.VehicleFlyThrottleDown,
             ControlAction.VehicleFlyRollLeftRight,
-            ControlAction.VehicleFlyPitchUpDown
+            ControlAction.VehicleFlyPitchUpDown,
+            (ControlAction)75, // INPUT_VEH_EXIT
+            (ControlAction)69, // INPUT_VEH_ATTACK
+            (ControlAction)44, // INPUT_COVER
+            ControlAction.Attack,
+            ControlAction.Aim,
+            ControlAction.VehicleAim,
+            ControlAction.VehicleAttack2,
+            ControlAction.VehicleFlyAttack,
+            ControlAction.VehicleFlyAttack2,
+            ControlAction.VehicleHorn
         };
 
         private const int FallShieldDurationMs = 3000;
         private const int MaxClockSkewToleranceMs = 5000;
 
-        private readonly float _baseSpeed;
+        private float _baseSpeed;
         private readonly Func<bool> _isMultiplayerBlocked;
         private Entity _controlledEntity;
+        private Ped _fallShieldPlayer;
         private Vehicle _fallShieldVehicle;
         private int _fallShieldUntilGameTime;
         private int _speedPresetIndex = 1;
@@ -80,6 +91,21 @@ namespace StoryModeTrainerMod
         }
 
         public bool IsActive { get; private set; }
+
+        public float BaseSpeed
+        {
+            get { return _baseSpeed; }
+            set
+            {
+                if (float.IsNaN(value) || float.IsInfinity(value))
+                {
+                    _baseSpeed = 18.0f;
+                    return;
+                }
+
+                _baseSpeed = Math.Max(2.0f, Math.Min(200.0f, value));
+            }
+        }
         public bool ExitFallShieldEnabled { get; set; }
         public bool SnapToGroundOnExit { get; set; }
         public bool AlignHeadingWithCamera { get; set; }
@@ -136,7 +162,16 @@ namespace StoryModeTrainerMod
             }
 
             _fallShieldUntilGameTime = 0;
+            if (_fallShieldVehicle != null && _fallShieldVehicle.Exists())
+            {
+                RestoreVehicleDefaults(_fallShieldVehicle, false, keepCollisionProof: false);
+            }
             _fallShieldVehicle = null;
+            if (_fallShieldPlayer != null && _fallShieldPlayer.Exists() && _fallShieldPlayer.Handle != player.Handle)
+            {
+                RestorePlayerDefaults(_fallShieldPlayer, false, preserveCombatProofs: false);
+            }
+            _fallShieldPlayer = null;
             IsActive = true;
 
             Entity target = ResolveTargetEntity(player);
@@ -178,6 +213,7 @@ namespace StoryModeTrainerMod
                 else
                 {
                     player.IsPositionFrozen = false;
+                    player.IsCollisionEnabled = true;
                     player.HasGravity = true;
                     ReleaseEntityPhysics(currentVeh);
                 }
@@ -192,12 +228,14 @@ namespace StoryModeTrainerMod
                 {
                     // Brief grace shield so disabling No-Clip in mid-air or after a failed ground probe never causes fatal impact or ragdoll.
                     _fallShieldUntilGameTime = Game.GameTime + FallShieldDurationMs;
+                    _fallShieldPlayer = player;
                     _fallShieldVehicle = inCurrentVeh ? currentVeh : null;
-                    ApplyFallShieldState(player, _fallShieldVehicle, preserveCombatProofs);
+                    ApplyFallShieldState(player, _fallShieldVehicle, userGodMode, preserveCombatProofs);
                 }
                 else
                 {
                     _fallShieldUntilGameTime = 0;
+                    _fallShieldPlayer = null;
                     _fallShieldVehicle = null;
                     RestorePlayerDefaults(player, userGodMode, preserveCombatProofs);
                     if (inCurrentVeh)
@@ -206,17 +244,13 @@ namespace StoryModeTrainerMod
                     }
                 }
             }
-            else if (inCurrentVeh)
-            {
-                RestoreVehicleDefaults(currentVeh, userVehicleGodMode, keepCollisionProof: userVehicleGodMode);
-            }
         }
 
-        public void Tick(Ped player, bool userGodMode, bool userVehicleGodMode, bool preserveCombatProofs = false)
+        public void Tick(Ped player, bool userGodMode, bool userVehicleGodMode, bool preserveCombatProofs = false, bool suspendMovementInput = false)
         {
             if (_isMultiplayerBlocked())
             {
-                if (IsActive)
+                if (IsActive || _fallShieldUntilGameTime > 0 || _fallShieldVehicle != null || _fallShieldPlayer != null)
                 {
                     ForceCleanupOnAbort(player);
                 }
@@ -263,8 +297,14 @@ namespace StoryModeTrainerMod
             }
 
             ApplyNoClipEntityState(player, target);
-            DisableInterferingControls();
-            MoveTargetAlongCamera(target);
+            bool inputBlocked = suspendMovementInput
+                || Game.IsPaused
+                || Function.Call<int>(Hash.UPDATE_ONSCREEN_KEYBOARD) == 0;
+            if (!inputBlocked)
+            {
+                DisableInterferingControls();
+                MoveTargetAlongCamera(target);
+            }
         }
 
         /// <summary>
@@ -292,12 +332,20 @@ namespace StoryModeTrainerMod
             }
             _fallShieldVehicle = null;
 
+            if (_fallShieldPlayer != null && _fallShieldPlayer.Exists() && (player == null || !player.Exists() || _fallShieldPlayer.Handle != player.Handle))
+            {
+                ReleaseEntityPhysics(_fallShieldPlayer);
+                RestorePlayerDefaults(_fallShieldPlayer, false, preserveCombatProofs: false);
+            }
+            _fallShieldPlayer = null;
+
             if (player != null && player.Exists())
             {
                 Vehicle currentVeh = player.IsInVehicle() ? player.CurrentVehicle : null;
                 if (currentVeh != null && currentVeh.Exists())
                 {
                     player.IsPositionFrozen = false;
+                    player.IsCollisionEnabled = true;
                     player.HasGravity = true;
                     ReleaseEntityPhysics(currentVeh);
                     RestoreVehicleDefaults(currentVeh, false, keepCollisionProof: false);
@@ -313,7 +361,7 @@ namespace StoryModeTrainerMod
 
         public bool TryLandOnSurfaceBelow(Ped player)
         {
-            if (player == null || !player.Exists() || player.IsDead)
+            if (_isMultiplayerBlocked() || IsActive || !CanOperateSafely(player))
             {
                 return false;
             }
@@ -329,14 +377,21 @@ namespace StoryModeTrainerMod
                 return;
             }
 
+            if (_fallShieldPlayer != null && _fallShieldPlayer.Exists() && _fallShieldPlayer.Handle != player.Handle)
+            {
+                RestorePlayerDefaults(_fallShieldPlayer, false, preserveCombatProofs: false);
+                _fallShieldPlayer = null;
+            }
+
             int remaining = _fallShieldUntilGameTime - Game.GameTime;
             if (remaining > 0 && remaining <= FallShieldDurationMs + MaxClockSkewToleranceMs && player.IsAlive)
             {
-                ApplyFallShieldState(player, _fallShieldVehicle, preserveCombatProofs);
+                ApplyFallShieldState(player, _fallShieldVehicle, userGodMode, preserveCombatProofs);
                 return;
             }
 
             _fallShieldUntilGameTime = 0;
+            _fallShieldPlayer = null;
             RestorePlayerDefaults(player, userGodMode, preserveCombatProofs);
 
             if (_fallShieldVehicle != null && _fallShieldVehicle.Exists())
@@ -360,10 +415,13 @@ namespace StoryModeTrainerMod
 
         private static Entity ResolveTargetEntity(Ped player)
         {
-            Vehicle currentVeh = player.CurrentVehicle;
-            if (player.IsInVehicle() && currentVeh != null && currentVeh.Exists())
+            if (player.IsInVehicle())
             {
-                return currentVeh;
+                Vehicle currentVeh = player.CurrentVehicle;
+                if (currentVeh != null && currentVeh.Exists())
+                {
+                    return currentVeh;
+                }
             }
 
             return player;
@@ -375,18 +433,13 @@ namespace StoryModeTrainerMod
             target.IsCollisionEnabled = false;
             target.HasGravity = false;
             target.Velocity = Vector3.Zero;
-            target.IsCollisionProof = true;
-            target.IsInvincible = true;
-            target.IsExplosionProof = true;
-            target.IsFireProof = true;
-            target.IsBulletProof = true;
-            target.IsMeleeProof = true;
+            if (target.Handle != player.Handle)
+            {
+                Function.Call(Hash.SET_ENTITY_PROOFS, target.Handle, true, true, true, true, true, false, false, false);
+                target.IsInvincible = true;
+            }
 
-            player.IsCollisionProof = true;
-            player.IsFireProof = true;
-            player.IsExplosionProof = true;
-            player.IsBulletProof = true;
-            player.IsMeleeProof = true;
+            Function.Call(Hash.SET_ENTITY_PROOFS, player.Handle, true, true, true, true, true, false, false, false);
             player.IsInvincible = true;
             player.CanRagdoll = false;
             player.DrownsInWater = false;
@@ -406,18 +459,15 @@ namespace StoryModeTrainerMod
             }
         }
 
-        private static void ApplyFallShieldState(Ped player, Vehicle fallVehicle, bool preserveCombatProofs)
+        private static void ApplyFallShieldState(Ped player, Vehicle fallVehicle, bool userGodMode, bool preserveCombatProofs)
         {
             player.CanRagdoll = false;
             if (player.IsRagdoll)
             {
                 player.CancelRagdoll();
             }
-            player.IsCollisionProof = true;
-            player.IsFireProof = true;
-            player.IsExplosionProof = true;
-            player.IsBulletProof = preserveCombatProofs;
-            player.IsMeleeProof = false;
+            bool bulletProof = userGodMode || preserveCombatProofs;
+            Function.Call(Hash.SET_ENTITY_PROOFS, player.Handle, bulletProof, true, true, true, userGodMode, false, false, false);
             player.IsInvincible = true;
             player.ClearLastWeaponDamage();
             Function.Call(Hash.CLEAR_ENTITY_LAST_DAMAGE_ENTITY, player.Handle);
@@ -575,38 +625,41 @@ namespace StoryModeTrainerMod
                 return true;
             }
 
-            // Avoid probing from sky altitudes if currently underground inside a sub-zero interior cell.
-            if (pos.Z < -15.0f && Function.Call<int>(Hash.GET_INTERIOR_AT_COORDS, pos.X, pos.Y, pos.Z) != 0)
+            // Avoid probing from sky altitudes if currently inside any loaded interior cell (underground or above-ground).
+            if (Function.Call<int>(Hash.GET_INTERIOR_AT_COORDS, pos.X, pos.Y, pos.Z) != 0)
             {
                 groundZ = 0f;
                 return false;
             }
 
-            float[] probeHeights = { pos.Z + 25.0f, pos.Z * 0.5f, 300.0f, 150.0f, 60.0f, 20.0f, pos.Z + 250.0f, 1000.0f };
-            for (int i = 0; i < probeHeights.Length; i++)
+            float midZ = pos.Z > 0.0f ? pos.Z * 0.5f : pos.Z - 5.0f;
+            float[] probeHeights = { pos.Z + 25.0f, midZ, 300.0f, 150.0f, 60.0f, 20.0f, pos.Z + 250.0f, 1000.0f };
+            using (OutputArgument outArg = new OutputArgument())
             {
-                float probeZ = probeHeights[i];
-                Function.Call(Hash.REQUEST_COLLISION_AT_COORD, pos.X, pos.Y, probeZ);
-
-                RaycastResult elevatedRay = World.Raycast(
-                    new Vector3(pos.X, pos.Y, probeZ),
-                    new Vector3(pos.X, pos.Y, -50.0f),
-                    IntersectFlags.Map | IntersectFlags.Objects,
-                    ignoreEntity
-                );
-                if (elevatedRay.DidHit)
+                for (int i = 0; i < probeHeights.Length; i++)
                 {
-                    groundZ = elevatedRay.HitPosition.Z;
-                    return true;
-                }
+                    float probeZ = probeHeights[i];
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD, pos.X, pos.Y, probeZ);
 
-                OutputArgument outArg = new OutputArgument();
-                float queryZ = Math.Max(probeZ, pos.Z + 5.0f);
-                if (Function.Call<bool>(Hash.GET_GROUND_Z_FOR_3D_COORD, pos.X, pos.Y, queryZ, outArg, false, false)
-                    || Function.Call<bool>(Hash.GET_GROUND_Z_FOR_3D_COORD, pos.X, pos.Y, probeZ, outArg, false, false))
-                {
-                    groundZ = outArg.GetResult<float>();
-                    return true;
+                    RaycastResult elevatedRay = World.Raycast(
+                        new Vector3(pos.X, pos.Y, probeZ),
+                        new Vector3(pos.X, pos.Y, -50.0f),
+                        IntersectFlags.Map | IntersectFlags.Objects,
+                        ignoreEntity
+                    );
+                    if (elevatedRay.DidHit)
+                    {
+                        groundZ = elevatedRay.HitPosition.Z;
+                        return true;
+                    }
+
+                    float queryZ = Math.Max(probeZ, pos.Z + 5.0f);
+                    if (Function.Call<bool>(Hash.GET_GROUND_Z_FOR_3D_COORD, pos.X, pos.Y, queryZ, outArg, false, false)
+                        || Function.Call<bool>(Hash.GET_GROUND_Z_FOR_3D_COORD, pos.X, pos.Y, probeZ, outArg, false, false))
+                    {
+                        groundZ = outArg.GetResult<float>();
+                        return true;
+                    }
                 }
             }
 

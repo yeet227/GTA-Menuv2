@@ -191,6 +191,11 @@ namespace StoryModeTrainerMod
         private int _jumpModeIndex;
         private int _characterPresetIndex;
         private int _lastAppliedPedHandle;
+        private Ped _lastAppliedPed;
+        private float _lastAppliedRunMultValue = 1.0f;
+        private float _lastAppliedSwimMultValue = 1.0f;
+        private int _lastWheelScaleformHandle;
+        private int _lastWheelRenderedQuadrant = -1;
         private int _originalProtagonistModelHash;
         private int _originalProtagonistIndex = -1;
         private int _jumpShieldStartGameTime;
@@ -442,7 +447,7 @@ namespace StoryModeTrainerMod
         /// </summary>
         public void Tick(Ped player, bool noClipActive, bool userGodMode, bool heistShielded)
         {
-            if (_shouldAbortWait() || player == null || !player.Exists())
+            if (_shouldAbortWait() || player == null || !player.Exists() || player.IsDead)
             {
                 _jumpFallShieldActive = false;
                 _superSprintActive = false;
@@ -455,11 +460,24 @@ namespace StoryModeTrainerMod
 
             if (handleChanged)
             {
+                if (_lastAppliedPed != null && _lastAppliedPed.Exists() && _lastAppliedPed.Handle != player.Handle)
+                {
+                    ClearInfiniteAmmoFromPed(_lastAppliedPed);
+                    if (_jumpFallShieldActive || _superSprintActive)
+                    {
+                        _lastAppliedPed.CanRagdoll = true;
+                        _lastAppliedPed.IsCollisionProof = false;
+                        _lastAppliedPed.IsInvincible = false;
+                    }
+                }
                 _infiniteAmmoAppliedWeapons.Clear();
                 _appliedInfiniteClip = false;
                 _wasJumping = false;
                 _jumpFallShieldActive = false;
                 _superSprintActive = false;
+                _lastAppliedRunMultValue = -1.0f;
+                _lastAppliedSwimMultValue = -1.0f;
+                _lastAppliedPed = player;
                 _lastAppliedPedHandle = player.Handle;
             }
 
@@ -476,8 +494,13 @@ namespace StoryModeTrainerMod
                 }
             }
 
+            bool wasSuperSprint = _superSprintActive;
             TickAmmoAndClip(player);
             TickSprintAndMovement(player, noClipActive);
+            if (wasSuperSprint && !_superSprintActive && !_jumpFallShieldActive && !noClipActive && !userGodMode)
+            {
+                player.CanRagdoll = true;
+            }
             TickJumpAndFallShield(player, noClipActive, userGodMode, heistShielded);
         }
 
@@ -521,7 +544,7 @@ namespace StoryModeTrainerMod
             _isSwitchingModel = true;
             try
             {
-                model.Request(1500);
+                model.Request();
                 int deadline = Game.GameTime + 3000;
                 while (!model.IsLoaded)
                 {
@@ -593,15 +616,15 @@ namespace StoryModeTrainerMod
                     InitializeSwitchedPedAppearance(newPed, model.Hash, isFreemodeModel);
                     RestoreWeaponsSnapshot(newPed, arsenal, savedActiveWeapon);
 
-                    int targetMaxHealth = Math.Max(200, Math.Max(newPed.MaxHealth, savedMaxHealth));
+                    int targetMaxHealth = Math.Max(newPed.MaxHealth, savedMaxHealth);
                     if (newPed.MaxHealth < targetMaxHealth)
                     {
                         newPed.MaxHealth = targetMaxHealth;
                     }
-                    newPed.Health = Math.Max(150, Math.Min(newPed.MaxHealth, savedHealth));
+                    newPed.Health = Math.Max(1, Math.Min(newPed.MaxHealth, savedHealth));
                     newPed.Armor = Math.Max(0, Math.Min(Game.Player.MaxArmor, savedArmor));
 
-                    if (hadValidVeh && savedVeh.Exists() && savedSeat != VehicleSeat.None)
+                    if (hadValidVeh && savedVeh.Exists() && savedSeat != VehicleSeat.None && savedVeh.IsSeatFree(savedSeat))
                     {
                         newPed.SetIntoVehicle(savedVeh, savedSeat);
                         if (savedSeat == VehicleSeat.Driver)
@@ -713,7 +736,11 @@ namespace StoryModeTrainerMod
                 || Game.IsCutsceneActive
                 || Game.IsPaused)
             {
-                _wasCharacterWheelHeld = false;
+                if (_wasCharacterWheelHeld)
+                {
+                    HideWheelScaleformIfVisible();
+                    _wasCharacterWheelHeld = false;
+                }
                 if (!CharacterWheelSwapEnabled)
                 {
                     ReleaseFallbackWheelScaleform();
@@ -912,7 +939,7 @@ namespace StoryModeTrainerMod
         {
             if (_isSwitchingModel) return;
 
-            int idx = ResolveProtagonistIndex(player);
+            int idx = ResolveProtagonistIndexByModelHash(player.Model.Hash);
             if (idx >= 0)
             {
                 _trainerAppliedCustomModel = false;
@@ -1038,7 +1065,8 @@ namespace StoryModeTrainerMod
                 }
             }
 
-            if (scaleformHandle == 0 || !Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, scaleformHandle))
+            bool scaleformLoaded = scaleformHandle != 0 && Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, scaleformHandle);
+            if (!scaleformLoaded)
             {
                 if (_fallbackWheelScaleformHandle == 0)
                 {
@@ -1047,27 +1075,35 @@ namespace StoryModeTrainerMod
                 if (_fallbackWheelScaleformHandle != 0 && Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, _fallbackWheelScaleformHandle))
                 {
                     scaleformHandle = _fallbackWheelScaleformHandle;
+                    scaleformLoaded = true;
                 }
             }
 
-            if (scaleformHandle != 0 && Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, scaleformHandle))
+            if (scaleformLoaded)
             {
-                // Populate all 3 Single-Player slots as unlocked (state=1) and lock Slot 2 (Online, state=2).
-                // Head indices in PLAYER_SWITCH scaleform: 0=Michael, 1=Trevor, 2=Franklin, 3=MP.
-                SetWheelSwitchSlot(scaleformHandle, 0, 1, 2, selectedQuadrant == 0); // Top: Franklin
-                SetWheelSwitchSlot(scaleformHandle, 1, 1, 1, selectedQuadrant == 1); // Right: Trevor
-                SetWheelSwitchSlot(scaleformHandle, 2, 2, 3, false);                 // Bottom: Online (Locked)
-                SetWheelSwitchSlot(scaleformHandle, 3, 1, 0, selectedQuadrant == 3); // Left: Michael
+                if (_lastWheelScaleformHandle != scaleformHandle || _lastWheelRenderedQuadrant != selectedQuadrant)
+                {
+                    // Populate all 3 Single-Player slots as unlocked (state=1) and lock Slot 2 (Online, state=2).
+                    // Head indices in PLAYER_SWITCH scaleform: 0=Michael, 1=Trevor, 2=Franklin, 3=MP.
+                    SetWheelSwitchSlot(scaleformHandle, 0, 1, 2, selectedQuadrant == 0); // Top: Franklin
+                    SetWheelSwitchSlot(scaleformHandle, 1, 1, 1, selectedQuadrant == 1); // Right: Trevor
+                    SetWheelSwitchSlot(scaleformHandle, 2, 2, 3, false);                 // Bottom: Online (Locked)
+                    SetWheelSwitchSlot(scaleformHandle, 3, 1, 0, selectedQuadrant == 3); // Left: Michael
 
-                Function.Call(Hash.BEGIN_SCALEFORM_MOVIE_METHOD, scaleformHandle, "SET_MP_LABEL");
-                Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_PLAYER_NAME_STRING, "");
-                Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
+                    Function.Call(Hash.BEGIN_SCALEFORM_MOVIE_METHOD, scaleformHandle, "SET_MP_LABEL");
+                    Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_PLAYER_NAME_STRING, "");
+                    Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
 
-                Function.Call(Hash.BEGIN_SCALEFORM_MOVIE_METHOD, scaleformHandle, "SET_PLAYER_SELECTED");
-                Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_INT, selectedQuadrant);
-                Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
+                    Function.Call(Hash.BEGIN_SCALEFORM_MOVIE_METHOD, scaleformHandle, "SET_PLAYER_SELECTED");
+                    Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_INT, selectedQuadrant);
+                    Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
 
-                if (!nativeWheelVisible && (Game.GameTime - _wheelHoldStartGameTime) >= 140)
+                    _lastWheelScaleformHandle = scaleformHandle;
+                    _lastWheelRenderedQuadrant = selectedQuadrant;
+                }
+
+                uint holdElapsedMs = unchecked((uint)(Game.GameTime - _wheelHoldStartGameTime));
+                if (!nativeWheelVisible && holdElapsedMs >= 140u && holdElapsedMs < 600000u)
                 {
                     Function.Call(Hash.BEGIN_SCALEFORM_MOVIE_METHOD, scaleformHandle, "SET_SWITCH_VISIBLE");
                     Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_BOOL, true);
@@ -1088,6 +1124,18 @@ namespace StoryModeTrainerMod
                     );
                 }
             }
+        }
+
+        private void HideWheelScaleformIfVisible()
+        {
+            if (_lastWheelScaleformHandle != 0 && Function.Call<bool>(Hash.HAS_SCALEFORM_MOVIE_LOADED, _lastWheelScaleformHandle))
+            {
+                Function.Call(Hash.BEGIN_SCALEFORM_MOVIE_METHOD, _lastWheelScaleformHandle, "SET_SWITCH_VISIBLE");
+                Function.Call(Hash.SCALEFORM_MOVIE_METHOD_ADD_PARAM_BOOL, false);
+                Function.Call(Hash.END_SCALEFORM_MOVIE_METHOD);
+            }
+            _lastWheelScaleformHandle = 0;
+            _lastWheelRenderedQuadrant = -1;
         }
 
         private static void SetWheelSwitchSlot(int scaleformHandle, int quadrantIndex, int stateEnum, int charHeadIndex, bool selected)
@@ -1196,23 +1244,28 @@ namespace StoryModeTrainerMod
             bool superSprintNow = false;
             if (runMult > 1.001f)
             {
-                gamePlayer.RunSprintSpeedMultiplier = Math.Min(NativeSpeedCap, runMult);
+                float nativeRun = Math.Min(NativeSpeedCap, runMult);
+                if (Math.Abs(_lastAppliedRunMultValue - nativeRun) > 0.001f)
+                {
+                    gamePlayer.RunSprintSpeedMultiplier = nativeRun;
+                    _lastAppliedRunMultValue = nativeRun;
+                }
                 _appliedNativeRunMult = true;
 
                 if (runMult > NativeSpeedCap
                     && !noClipActive
+                    && (player.IsRunning || player.IsSprinting)
                     && !player.IsInVehicle()
+                    && !player.IsInWater
                     && !player.IsRagdoll
                     && !player.IsClimbing
                     && !player.IsFalling
                     && !player.IsJumping
-                    && !player.IsInWater
                     && !player.IsAiming
                     && !player.IsAimingFromCover
                     && !player.IsShooting
                     && !player.HasCollidedWithBuildingOrAnimatedBuilding
-                    && !Game.IsCutsceneActive
-                    && (player.IsRunning || player.IsSprinting))
+                    && !Game.IsCutsceneActive)
                 {
                     superSprintNow = true;
                     ApplyHorizontalMoveScale(player, 7.0f * runMult, 2.5f, hugGround: true);
@@ -1221,6 +1274,7 @@ namespace StoryModeTrainerMod
             else if (_appliedNativeRunMult)
             {
                 gamePlayer.RunSprintSpeedMultiplier = 1.0f;
+                _lastAppliedRunMultValue = 1.0f;
                 _appliedNativeRunMult = false;
             }
             _superSprintActive = superSprintNow;
@@ -1228,18 +1282,23 @@ namespace StoryModeTrainerMod
             float swimMult = SwimSpeedMultipliers[_swimSpeedIndex];
             if (swimMult > 1.001f)
             {
-                gamePlayer.SwimSpeedMultiplier = Math.Min(NativeSpeedCap, swimMult);
+                float nativeSwim = Math.Min(NativeSpeedCap, swimMult);
+                if (Math.Abs(_lastAppliedSwimMultValue - nativeSwim) > 0.001f)
+                {
+                    gamePlayer.SwimSpeedMultiplier = nativeSwim;
+                    _lastAppliedSwimMultValue = nativeSwim;
+                }
                 _appliedNativeSwimMult = true;
 
                 if (swimMult > NativeSpeedCap
                     && !noClipActive
+                    && player.IsInWater
+                    && (player.IsSwimming || player.IsSwimmingUnderWater || player.IsSprinting || player.IsRunning)
                     && !player.IsInVehicle()
                     && !player.IsRagdoll
-                    && player.IsInWater
                     && !player.IsAiming
                     && !player.IsShooting
-                    && !Game.IsCutsceneActive
-                    && (player.IsSprinting || player.IsRunning))
+                    && !Game.IsCutsceneActive)
                 {
                     ApplyHorizontalMoveScale(player, 4.5f * swimMult, 1.2f, hugGround: false);
                 }
@@ -1247,6 +1306,7 @@ namespace StoryModeTrainerMod
             else if (_appliedNativeSwimMult)
             {
                 gamePlayer.SwimSpeedMultiplier = 1.0f;
+                _lastAppliedSwimMultValue = 1.0f;
                 _appliedNativeSwimMult = false;
             }
         }
@@ -1268,13 +1328,19 @@ namespace StoryModeTrainerMod
                 }
             }
 
+            if (_jumpModeIndex == 0 && _runSpeedIndex < 3 && !_jumpFallShieldActive)
+            {
+                _wasJumping = false;
+                return;
+            }
+
             bool isJumping = !noClipActive
                 && !player.IsDead
                 && !player.IsInVehicle()
                 && !player.IsRagdoll
                 && !player.IsClimbing
                 && !player.IsInWater
-                && (player.IsJumping || Function.Call<bool>(Hash.IS_PED_JUMPING, player.Handle));
+                && player.IsJumping;
 
             if (isJumping && !_wasJumping && _jumpModeIndex >= 1 && _jumpModeIndex <= 4)
             {
@@ -1357,8 +1423,10 @@ namespace StoryModeTrainerMod
                 ? Vector3.Normalize((velDir * 0.55f) + (Vector3.Normalize(fwdHoriz) * 0.45f))
                 : velDir;
 
-            float nextSpeed = Math.Min(targetSpeed, currentSpeed + ((targetSpeed - currentSpeed) * 0.35f));
-            float nextZ = hugGround && vel.Z <= 0.15f && vel.Z >= -3.0f
+            float dt = Math.Max(0.001f, Math.Min(0.1f, Game.LastFrameTime));
+            float alpha = 1.0f - (float)Math.Exp(-25.0 * dt);
+            float nextSpeed = Math.Min(targetSpeed, currentSpeed + ((targetSpeed - currentSpeed) * alpha));
+            float nextZ = hugGround && vel.Z <= 0.02f && vel.Z >= -3.0f
                 ? Math.Min(vel.Z, -0.6f)
                 : vel.Z;
             player.Velocity = new Vector3(steerDir.X * nextSpeed, steerDir.Y * nextSpeed, nextZ);

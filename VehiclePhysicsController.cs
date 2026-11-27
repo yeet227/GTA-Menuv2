@@ -134,10 +134,21 @@ namespace StoryModeTrainerMod
         private int _topSpeedIndex;
         private int _brakeIndex;
         private int _tractionIndex;
+        private const int AutoRepairPollIntervalMs = 200;
+
         private Vehicle _activeVehicle;
         private float _appliedTopSpeedPct;
         private bool _appliedNativePower;
         private bool _handlingModified;
+        private int _appliedHandlingVehicleHandle;
+        private int _appliedHandlingPowerIndex = -1;
+        private int _appliedHandlingBrakeIndex = -1;
+        private int _appliedHandlingTractionIndex = -1;
+        private int _lastAutoRepairCheckMs;
+        private int _autoRepairBaselineHandle;
+        private float _autoRepairBaselineBody;
+        private float _autoRepairBaselineEngine;
+        private float _autoRepairBaselinePetrol;
 
         public VehiclePhysicsController(Func<bool> isMultiplayerBlocked = null)
         {
@@ -194,11 +205,11 @@ namespace StoryModeTrainerMod
             float heading = vehicle.Heading;
             Vector3 vel = vehicle.Velocity;
             vehicle.Rotation = new Vector3(0.0f, 0.0f, heading);
-            if (!vehicle.IsInWater && !vehicle.Model.IsBoat && !vehicle.Model.IsSubmarine)
+            if (!vehicle.IsInWater && !vehicle.IsInAir && !vehicle.Model.IsBoat && !vehicle.Model.IsSubmarine)
             {
                 vehicle.PlaceOnGround();
             }
-            vehicle.Velocity = new Vector3(vel.X, vel.Y, 0.0f);
+            vehicle.Velocity = new Vector3(vel.X * 0.2f, vel.Y * 0.2f, 0.0f);
             return true;
         }
 
@@ -228,12 +239,14 @@ namespace StoryModeTrainerMod
             _appliedTopSpeedPct = 0.0f;
             _appliedNativePower = false;
             _handlingModified = false;
+            ResetHandlingDirtyTracking();
+            _autoRepairBaselineHandle = 0;
         }
 
         /// <summary>
         /// Applies configured multipliers to the player's current vehicle and cleans up previous vehicles on exit.
         /// </summary>
-        public void Tick(Ped player)
+        public void Tick(Ped player, bool isNoClipControlling = false)
         {
             if (_isMultiplayerBlocked())
             {
@@ -241,24 +254,21 @@ namespace StoryModeTrainerMod
                 return;
             }
 
-            Vehicle current = (player != null && player.Exists() && player.IsInVehicle()) ? player.CurrentVehicle : null;
+            if (player == null || !player.Exists() || player.IsDead || Game.IsPaused || Game.IsCutsceneActive
+                || isNoClipControlling || Function.Call<bool>(Hash.IS_PLAYER_SWITCH_IN_PROGRESS))
+            {
+                return;
+            }
+
+            Vehicle current = player.IsInVehicle() ? player.CurrentVehicle : null;
             bool inCurrent = current != null && current.Exists();
-            bool isDriver = inCurrent && current.Driver != null && current.Driver.Handle == player.Handle;
+            bool isDriver = inCurrent && player.SeatIndex == VehicleSeat.Driver;
 
             if (!inCurrent)
             {
                 ClearActiveVehicleOverrides();
+                _autoRepairBaselineHandle = 0;
                 return;
-            }
-
-            if (AutoRepairCurrentVehicle
-                && (current.BodyHealth < 999f
-                    || current.EngineHealth < 999f
-                    || current.PetrolTankHealth < 999f
-                    || Function.Call<bool>(Hash.GET_DOES_VEHICLE_HAVE_DAMAGE_DECALS, current.Handle)))
-            {
-                current.Repair();
-                _appliedTopSpeedPct = -1.0f; // Repair can clear per-entity top speed overrides cleanly.
             }
 
             if (!isDriver)
@@ -277,10 +287,14 @@ namespace StoryModeTrainerMod
 
             _activeVehicle = current;
 
+            if (AutoRepairCurrentVehicle)
+            {
+                TickAutoRepair(current);
+            }
+
             float powerMult = PowerMultipliers[_powerIndex];
             if (powerMult > 1.001f)
             {
-                Function.Call(Hash.SET_VEHICLE_CHEAT_POWER_INCREASE, current.Handle, powerMult);
                 current.EngineTorqueMultiplier = powerMult;
                 _appliedNativePower = true;
             }
@@ -298,7 +312,58 @@ namespace StoryModeTrainerMod
                 _appliedTopSpeedPct = desiredTopSpeedPct;
             }
 
-            ApplyHandlingMultipliers(current, powerMult, BrakeMultipliers[_brakeIndex], TractionMultipliers[_tractionIndex]);
+            if (_appliedHandlingVehicleHandle != current.Handle
+                || _appliedHandlingPowerIndex != _powerIndex
+                || _appliedHandlingBrakeIndex != _brakeIndex
+                || _appliedHandlingTractionIndex != _tractionIndex)
+            {
+                ApplyHandlingMultipliers(current, powerMult, BrakeMultipliers[_brakeIndex], TractionMultipliers[_tractionIndex]);
+                _appliedHandlingVehicleHandle = current.Handle;
+                _appliedHandlingPowerIndex = _powerIndex;
+                _appliedHandlingBrakeIndex = _brakeIndex;
+                _appliedHandlingTractionIndex = _tractionIndex;
+            }
+        }
+
+        private void TickAutoRepair(Vehicle current)
+        {
+            int now = Game.GameTime;
+            if ((uint)(now - _lastAutoRepairCheckMs) < AutoRepairPollIntervalMs)
+            {
+                return;
+            }
+            _lastAutoRepairCheckMs = now;
+
+            if (_autoRepairBaselineHandle != current.Handle)
+            {
+                _autoRepairBaselineHandle = current.Handle;
+                _autoRepairBaselineBody = Math.Min(999.0f, Math.Max(100.0f, current.BodyHealth));
+                _autoRepairBaselineEngine = Math.Min(999.0f, Math.Max(100.0f, current.EngineHealth));
+                _autoRepairBaselinePetrol = current.PetrolTankHealth > 0.0f ? Math.Min(999.0f, current.PetrolTankHealth) : 0.0f;
+            }
+
+            bool petrolDamaged = _autoRepairBaselinePetrol > 0.0f && current.PetrolTankHealth < (_autoRepairBaselinePetrol - 1.0f);
+            bool damaged = current.BodyHealth < (_autoRepairBaselineBody - 1.0f)
+                || current.EngineHealth < (_autoRepairBaselineEngine - 1.0f)
+                || petrolDamaged
+                || Function.Call<bool>(Hash.GET_DOES_VEHICLE_HAVE_DAMAGE_DECALS, current.Handle);
+
+            if (damaged)
+            {
+                current.Repair();
+                _autoRepairBaselineBody = Math.Min(999.0f, Math.Max(100.0f, current.BodyHealth));
+                _autoRepairBaselineEngine = Math.Min(999.0f, Math.Max(100.0f, current.EngineHealth));
+                _autoRepairBaselinePetrol = current.PetrolTankHealth > 0.0f ? Math.Min(999.0f, current.PetrolTankHealth) : 0.0f;
+                _appliedTopSpeedPct = -1.0f; // Repair can clear per-entity top speed overrides cleanly.
+            }
+        }
+
+        private void ResetHandlingDirtyTracking()
+        {
+            _appliedHandlingVehicleHandle = 0;
+            _appliedHandlingPowerIndex = -1;
+            _appliedHandlingBrakeIndex = -1;
+            _appliedHandlingTractionIndex = -1;
         }
 
         private void ClearActiveVehicleOverrides()
@@ -320,6 +385,7 @@ namespace StoryModeTrainerMod
             _appliedTopSpeedPct = 0.0f;
             _appliedNativePower = false;
             _handlingModified = false;
+            ResetHandlingDirtyTracking();
         }
 
         public void CleanupOnAbort(Ped player)
@@ -355,14 +421,14 @@ namespace StoryModeTrainerMod
                 _handlingBaselines[key] = baseline;
             }
 
-            // Combine moderate handling drive-force scaling with native torque/cheat power so even heavy/EV models launch smoothly.
-            float accelHandlingMult = 1.0f + ((powerMult - 1.0f) * 0.25f);
+            // Apply mild capped drive-force assist alongside EngineTorqueMultiplier (avoiding 3-way multiplicative stacking).
+            float accelHandlingMult = 1.0f + Math.Min(0.6f, (powerMult - 1.0f) * 0.12f);
             hd.InitialDriveForce = baseline.InitialDriveForce * accelHandlingMult;
             hd.BrakeForce = baseline.BrakeForce * brakeMult;
             hd.HandBrakeForce = baseline.HandBrakeForce * Math.Max(1.0f, brakeMult * 0.85f);
             hd.TractionCurveMax = baseline.TractionCurveMax * tractionMult;
             hd.TractionCurveMin = baseline.TractionCurveMin * Math.Min(3.0f, 1.0f + ((tractionMult - 1.0f) * 0.7f));
-            hd.DownForceModifier = Math.Max(baseline.DownForceModifier, baseline.DownForceModifier + ((tractionMult - 1.0f) * 1.5f));
+            hd.DownForceModifier = baseline.DownForceModifier + Math.Min(1.5f, (tractionMult - 1.0f) * 0.5f);
             if (tractionMult > 1.001f)
             {
                 hd.LowSpeedTractionLossMultiplier = baseline.LowSpeedTractionLossMultiplier / tractionMult;

@@ -11,6 +11,8 @@ namespace StoryModeTrainerMod
     /// </summary>
     internal sealed class TrainerConfig
     {
+        private static readonly char[] CommentDelimiters = new[] { ';', '#' };
+
         public Keys MenuToggleKey { get; set; } = Keys.F3;
         public Keys NoClipToggleKey { get; set; } = Keys.F9;
         public bool DespawnPreviousVehicle { get; set; } = true;
@@ -103,14 +105,17 @@ namespace StoryModeTrainerMod
                     Directory.CreateDirectory(dir);
                 }
 
-                float clampedSpeed = NoClipBaseSpeed;
-                if (float.IsNaN(clampedSpeed) || float.IsInfinity(clampedSpeed) || clampedSpeed < 2.0f)
+                float clampedSpeed = ClampNoClipBaseSpeed(NoClipBaseSpeed);
+                NoClipBaseSpeed = clampedSpeed;
+
+                if (MenuToggleKey == Keys.None)
                 {
-                    clampedSpeed = 18.0f;
+                    MenuToggleKey = Keys.F3;
                 }
-                else if (clampedSpeed > 200.0f)
+
+                if (NoClipToggleKey == Keys.None || NoClipToggleKey == MenuToggleKey)
                 {
-                    clampedSpeed = 200.0f;
+                    NoClipToggleKey = MenuToggleKey == Keys.F9 ? Keys.F3 : Keys.F9;
                 }
 
                 StringBuilder sb = new StringBuilder(1024);
@@ -161,7 +166,17 @@ namespace StoryModeTrainerMod
                 sb.AppendLine("; Enable Single-Player DLC map changeset priority on startup (false keeps default until a DLC map is loaded)");
                 sb.AppendLine("AutoUnlockMpMaps=" + FormatBool(OnlineAutoUnlockMpMaps));
 
-                File.WriteAllText(iniPath, sb.ToString(), new UTF8Encoding(false));
+                string tempPath = iniPath + ".tmp";
+                File.WriteAllText(tempPath, sb.ToString(), new UTF8Encoding(false));
+                if (File.Exists(iniPath))
+                {
+                    File.Replace(tempPath, iniPath, null);
+                }
+                else
+                {
+                    File.Move(tempPath, iniPath);
+                }
+
                 return true;
             }
             catch
@@ -173,6 +188,26 @@ namespace StoryModeTrainerMod
         private static string FormatBool(bool value)
         {
             return value ? "true" : "false";
+        }
+
+        private static float ClampNoClipBaseSpeed(float speed)
+        {
+            if (float.IsNaN(speed) || float.IsInfinity(speed))
+            {
+                return 18.0f;
+            }
+
+            if (speed < 2.0f)
+            {
+                return 2.0f;
+            }
+
+            if (speed > 200.0f)
+            {
+                return 200.0f;
+            }
+
+            return speed;
         }
 
         private static void ApplySetting(TrainerConfig config, string section, string key, string value)
@@ -214,9 +249,7 @@ namespace StoryModeTrainerMod
                     && !float.IsNaN(speed)
                     && !float.IsInfinity(speed))
                 {
-                    if (speed < 2.0f) speed = 2.0f;
-                    if (speed > 200.0f) speed = 200.0f;
-                    config.NoClipBaseSpeed = speed;
+                    config.NoClipBaseSpeed = ClampNoClipBaseSpeed(speed);
                 }
                 else if (string.Equals(key, "ExitFallShield", StringComparison.OrdinalIgnoreCase) && TryParseBool(value, out bool shield))
                 {
@@ -322,7 +355,7 @@ namespace StoryModeTrainerMod
                 return string.Empty;
             }
 
-            int commentIndex = line.IndexOfAny(new[] { ';', '#' });
+            int commentIndex = line.IndexOfAny(CommentDelimiters);
             return commentIndex >= 0 ? line.Substring(0, commentIndex) : line;
         }
 
@@ -335,7 +368,7 @@ namespace StoryModeTrainerMod
             }
 
             string trimmed = value.Trim();
-            if (int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+            if (trimmed.IndexOf(',') >= 0 || int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
             {
                 parsed = Keys.None;
                 return false;

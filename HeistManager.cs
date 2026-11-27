@@ -109,6 +109,9 @@ namespace StoryModeTrainerMod
         private int _nextPedSweepGameTime;
         private bool _appliedPoliceIgnoreFlag;
         private bool _appliedPlayerCombatProofs;
+        private Ped _shieldedPlayerPed;
+        private int _nextPenaltyClearGameTime;
+        private bool _sawPassPendingForLockedHeist;
         private bool _hasCustomShares;
         private int _customSharesHeistId = -1;
         private readonly int[] _customShares = new int[3];
@@ -181,6 +184,12 @@ namespace StoryModeTrainerMod
 
         public bool TryGetActiveHeistId(out int heistId)
         {
+            if (!Game.IsMissionActive)
+            {
+                heistId = -1;
+                return false;
+            }
+
             if (IsScriptActive("jewelry_heist"))
             {
                 heistId = 0;
@@ -286,7 +295,16 @@ namespace StoryModeTrainerMod
                 _hasCustomShares = true;
             }
 
-            _customShares[charIndex] = clamped;
+            int otherSum = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                if (i != charIndex)
+                {
+                    otherSum = SafeAddClamped(otherSum, _customShares[i]);
+                }
+            }
+            int maxAllowedForChar = Math.Max(0, MaxSafeTake - otherSum);
+            _customShares[charIndex] = Math.Min(clamped, maxAllowedForChar);
             int shareSum = SafeAddClamped(_customShares[0], SafeAddClamped(_customShares[1], _customShares[2]));
             int currentActual = entry.GetStructField(1).Read<int>();
             int effectiveGross = ClampTake(Math.Max(currentActual, shareSum));
@@ -430,10 +448,12 @@ namespace StoryModeTrainerMod
                 return updated;
             }
 
-            OutputArgument outStat = new OutputArgument();
-            if (Function.Call<bool>(Hash.STAT_GET_INT, statHash, outStat, -1))
+            using (OutputArgument outStat = new OutputArgument())
             {
-                current = Math.Max(0, outStat.GetResult<int>());
+                if (Function.Call<bool>(Hash.STAT_GET_INT, statHash, outStat, -1))
+                {
+                    current = Math.Max(0, outStat.GetResult<int>());
+                }
             }
             int fallbackUpdated = SafeAddClamped(current, amount);
             Function.Call(Hash.STAT_SET_INT, statHash, fallbackUpdated, true);
@@ -479,10 +499,7 @@ namespace StoryModeTrainerMod
         {
             if (_isMultiplayerBlocked() || player == null || !player.Exists())
             {
-                RestoreTakeProtectionEntities();
-                RestorePoliceIgnoreIfApplied();
-                IsHeistShieldedNow = false;
-                _appliedPlayerCombatProofs = false;
+                ClearActiveTakeProtection(player, userGodMode, preservePlayerCombatProofs);
                 return;
             }
 
@@ -498,8 +515,24 @@ namespace StoryModeTrainerMod
             }
 
             bool globalsSupported = StoryModeTrainer.IsSupportedScriptGlobalBuild();
-            bool passPending = globalsSupported && GlobalVariable.Get(GlobalMissionPassPending).Read<int>() != 0;
-            int passHeistId = globalsSupported ? GlobalVariable.Get(GlobalMissionPassHeistId).Read<int>() : -1;
+            bool passPending = false;
+            int passHeistId = -1;
+            if (globalsSupported)
+            {
+                try
+                {
+                    passPending = GlobalVariable.Get(GlobalMissionPassPending).Read<int>() != 0;
+                    if (passPending)
+                    {
+                        passHeistId = GlobalVariable.Get(GlobalMissionPassHeistId).Read<int>();
+                    }
+                }
+                catch
+                {
+                    passPending = false;
+                    passHeistId = -1;
+                }
+            }
 
             if (ProtectHeistTake && (activeHeist || passPending))
             {
@@ -507,66 +540,86 @@ namespace StoryModeTrainerMod
             }
             else
             {
-                IsHeistShieldedNow = false;
-                RestoreTakeProtectionEntities();
-                RestorePoliceIgnoreIfApplied();
-                if (_appliedPlayerCombatProofs)
-                {
-                    if (!userGodMode && !preservePlayerCombatProofs)
-                    {
-                        player.IsBulletProof = false;
-                        player.IsExplosionProof = false;
-                    }
-                    _appliedPlayerCombatProofs = false;
-                }
+                ClearActiveTakeProtection(player, userGodMode, preservePlayerCombatProofs);
             }
 
             if (globalsSupported && LockTakeThroughCompletion && LockedHeistId >= 0 && LockedHeistId <= 4)
             {
-                if ((activeHeist && activeHeistId == LockedHeistId) || (passPending && passHeistId == LockedHeistId))
+                bool matchingPass = passPending && passHeistId == LockedHeistId;
+                if (matchingPass)
+                {
+                    _sawPassPendingForLockedHeist = true;
+                }
+
+                if ((activeHeist && activeHeistId == LockedHeistId) || matchingPass)
                 {
                     // Re-apply right across mission_stat_watcher.func_98 execution so Big Score/Bureau resets and cuts never overwrite the user's take.
                     ApplyTakeToHeistStruct(LockedHeistId, LockedGrossTake, KeepFullTakeWithoutCuts);
                 }
+                else if (_sawPassPendingForLockedHeist && !passPending && !activeHeist)
+                {
+                    // Automatically disarm once the heist payout pass finishes so future replays aren't silently overwritten.
+                    LockTakeThroughCompletion = false;
+                    _sawPassPendingForLockedHeist = false;
+                }
+            }
+            else
+            {
+                _sawPassPendingForLockedHeist = false;
             }
         }
 
         public void CleanupOnAbort(Ped player)
         {
-            RestorePoliceIgnoreIfApplied();
-            RestoreTakeProtectionEntities();
+            ClearActiveTakeProtection(player, userGodMode: false, preservePlayerCombatProofs: false);
+            _sawPassPendingForLockedHeist = false;
+        }
+
+        private void ClearActiveTakeProtection(Ped player, bool userGodMode, bool preservePlayerCombatProofs)
+        {
             IsHeistShieldedNow = false;
+            RestoreTakeProtectionEntities();
+            RestorePoliceIgnoreIfApplied();
+
+            if (_shieldedPlayerPed != null && _shieldedPlayerPed.Exists() && (player == null || !player.Exists() || _shieldedPlayerPed.Handle != player.Handle))
+            {
+                _shieldedPlayerPed.IsBulletProof = false;
+                _shieldedPlayerPed.IsExplosionProof = false;
+            }
+            _shieldedPlayerPed = null;
 
             if (_appliedPlayerCombatProofs && player != null && player.Exists())
             {
-                player.IsBulletProof = false;
-                player.IsExplosionProof = false;
+                if (!userGodMode && !preservePlayerCombatProofs)
+                {
+                    player.IsBulletProof = false;
+                    player.IsExplosionProof = false;
+                }
             }
             _appliedPlayerCombatProofs = false;
         }
 
         private void TickTakeProtection(Ped player, bool activeHeist, int activeHeistId, bool userGodMode, bool preservePlayerCombatProofs)
         {
-            ClearAllHeistPenalties();
+            int nowMs = Game.GameTime;
+            if ((uint)(nowMs - _nextPenaltyClearGameTime) >= 200u || _nextPenaltyClearGameTime == 0)
+            {
+                _nextPenaltyClearGameTime = nowMs;
+                if (activeHeist)
+                {
+                    ClearPenaltiesForHeist(activeHeistId);
+                }
+                else
+                {
+                    ClearAllHeistPenalties();
+                }
+            }
 
             if (!activeHeist)
             {
-                IsHeistShieldedNow = false;
-                RestoreTakeProtectionEntities();
-                RestorePoliceIgnoreIfApplied();
-                if (_appliedPlayerCombatProofs)
-                {
-                    if (!userGodMode && !preservePlayerCombatProofs)
-                    {
-                        player.IsBulletProof = false;
-                        player.IsExplosionProof = false;
-                    }
-                    _appliedPlayerCombatProofs = false;
-                }
+                ClearActiveTakeProtection(player, userGodMode, preservePlayerCombatProofs);
                 return;
             }
-
-            IsHeistShieldedNow = true;
 
             // Preserve peak loot displayed / stored on checkpoint globals for Paleto Score & Jewel Store.
             if (StoryModeTrainer.IsSupportedScriptGlobalBuild())
@@ -583,16 +636,19 @@ namespace StoryModeTrainerMod
 
             if (player.IsDead || Game.IsCutsceneActive)
             {
-                RestoreTakeProtectionEntities();
-                RestorePoliceIgnoreIfApplied();
-                if (_appliedPlayerCombatProofs && !userGodMode && !preservePlayerCombatProofs)
-                {
-                    player.IsBulletProof = false;
-                    player.IsExplosionProof = false;
-                }
-                _appliedPlayerCombatProofs = false;
+                ClearActiveTakeProtection(player, userGodMode, preservePlayerCombatProofs);
                 return;
             }
+
+            IsHeistShieldedNow = true;
+
+            // If player switched protagonists mid-heist, restore the former protagonist before shielding the new one.
+            if (_shieldedPlayerPed != null && _shieldedPlayerPed.Exists() && _shieldedPlayerPed.Handle != player.Handle)
+            {
+                _shieldedPlayerPed.IsBulletProof = false;
+                _shieldedPlayerPed.IsExplosionProof = false;
+            }
+            _shieldedPlayerPed = player;
 
             // Shield player against bullet/explosion damage flags used during police shootouts.
             player.IsBulletProof = true;
@@ -641,17 +697,18 @@ namespace StoryModeTrainerMod
                 }
 
                 PedType pType = ped.PedType;
+                Relationship rel = ped.GetRelationshipWithPed(player);
                 bool isLawOrHostileType = pType == PedType.Cop
                     || pType == PedType.Swat
                     || pType == PedType.Army
                     || ped.IsEnemy
-                    || ped.GetRelationshipWithPed(player) == Relationship.Hate;
+                    || rel == Relationship.Hate;
                 bool isAllyCrew = !isLawOrHostileType && (
                     ped.IsInGroup ||
                     pType == PedType.Player0 ||
                     pType == PedType.Player1 ||
                     pType == PedType.Player2 ||
-                    ped.GetRelationshipWithPed(player) == Relationship.Companion);
+                    rel == Relationship.Companion);
 
                 if (isAllyCrew)
                 {

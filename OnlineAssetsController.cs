@@ -503,6 +503,7 @@ namespace StoryModeTrainerMod
         private int _nextShopCheckGameTime;
         private int _nextMaintenanceGameTime;
         private bool _pendingStartupMpMapsUnlock;
+        private bool _isRevertingForCleanup;
         private bool _cayoZoneEnvironmentActive;
         private bool _cayoPathNodesActive;
         private bool _northYanktonZoneEnvironmentActive;
@@ -746,7 +747,7 @@ namespace StoryModeTrainerMod
 
         public void SetDiamondCasinoEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -769,7 +770,7 @@ namespace StoryModeTrainerMod
 
         public void SetAircraftCarrierEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -795,7 +796,7 @@ namespace StoryModeTrainerMod
 
         public void SetSuperyachtEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -815,7 +816,7 @@ namespace StoryModeTrainerMod
 
         public void SetCayoPericoEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -835,8 +836,6 @@ namespace StoryModeTrainerMod
             else
             {
                 SyncCayoPericoZoneEnvironment(false, force: true);
-                RemoveIplBatch(CayoPericoIpls);
-                RemoveIplBatch(CayoPericoConflictingIpls);
                 CayoPericoLoaded = false;
                 SyncWorldBoundaryState();
             }
@@ -844,7 +843,7 @@ namespace StoryModeTrainerMod
 
         public void SetNorthYanktonEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -877,7 +876,7 @@ namespace StoryModeTrainerMod
 
         public void SetGunrunningBunkerEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -897,7 +896,7 @@ namespace StoryModeTrainerMod
 
         public void SetDoomsdayFacilityEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -917,7 +916,7 @@ namespace StoryModeTrainerMod
 
         public void SetCargoShipEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -943,7 +942,7 @@ namespace StoryModeTrainerMod
 
         public void SetStoryInteriorsEnabled(bool enable)
         {
-            if (_isMultiplayerBlocked()) return;
+            if (!_isRevertingForCleanup && _isMultiplayerBlocked()) return;
 
             if (enable)
             {
@@ -958,6 +957,10 @@ namespace StoryModeTrainerMod
             }
             else
             {
+                if (!StoryInteriorsLoaded)
+                {
+                    return;
+                }
                 UnpinInteriorId(ref _fibLobbyInteriorId);
                 UnpinInteriorId(ref _coronerInteriorId);
                 UnpinInteriorId(ref _lifeinvaderInteriorId);
@@ -1088,22 +1091,24 @@ namespace StoryModeTrainerMod
                 Function.Call(Hash.SET_INSTANCE_PRIORITY_HINT, InstanceHintDriving);
                 RemoveIplBatch(DiamondCasinoConflictingDoorIpls);
                 RequestIplBatch(DiamondCasinoIpls);
-                _casinoInteriorId = 0;
-                _penthouseInteriorId = 0;
+                UnpinInteriorId(ref _casinoInteriorId);
+                UnpinInteriorId(ref _penthouseInteriorId);
             }
 
             if (AircraftCarrierLoaded && !Function.Call<bool>(Hash.IS_IPL_ACTIVE, "hei_carrier"))
             {
                 Function.Call(Hash.ON_ENTER_MP);
+                Function.Call(Hash.SET_INSTANCE_PRIORITY_HINT, InstanceHintDriving);
                 RequestIplBatch(AircraftCarrierIpls);
-                _carrierInteriorId = 0;
+                UnpinInteriorId(ref _carrierInteriorId);
             }
 
             if (SuperyachtLoaded && (!Function.Call<bool>(Hash.IS_IPL_ACTIVE, "smboat") || !Function.Call<bool>(Hash.IS_IPL_ACTIVE, "hei_yacht_heist")))
             {
                 Function.Call(Hash.ON_ENTER_MP);
+                Function.Call(Hash.SET_INSTANCE_PRIORITY_HINT, InstanceHintDriving);
                 RequestIplBatch(SuperyachtExteriorIpls);
-                _yachtInteriorId = 0;
+                UnpinInteriorId(ref _yachtInteriorId);
             }
 
             if (CayoPericoLoaded && _cayoZoneEnvironmentActive)
@@ -1121,21 +1126,23 @@ namespace StoryModeTrainerMod
             {
                 RemoveIplBatch(NorthYanktonConflictingIpls);
                 RequestIplBatch(NorthYanktonIpls);
-                _yanktonBankInteriorId = 0;
+                UnpinInteriorId(ref _yanktonBankInteriorId);
             }
 
             if (GunrunningBunkerLoaded && !Function.Call<bool>(Hash.IS_IPL_ACTIVE, "gr_grdlc_interior_placement"))
             {
                 Function.Call(Hash.ON_ENTER_MP);
+                Function.Call(Hash.SET_INSTANCE_PRIORITY_HINT, InstanceHintDriving);
                 RequestIplBatch(GunrunningBunkerIpls);
-                _bunkerInteriorId = 0;
+                UnpinInteriorId(ref _bunkerInteriorId);
             }
 
             if (DoomsdayFacilityLoaded && !Function.Call<bool>(Hash.IS_IPL_ACTIVE, "xm_x17dlc_int_placement"))
             {
                 Function.Call(Hash.ON_ENTER_MP);
+                Function.Call(Hash.SET_INSTANCE_PRIORITY_HINT, InstanceHintDriving);
                 RequestIplBatch(DoomsdayFacilityIpls);
-                _facilityInteriorId = 0;
+                UnpinInteriorId(ref _facilityInteriorId);
             }
 
             if (CargoShipLoaded && !Function.Call<bool>(Hash.IS_IPL_ACTIVE, "cargoship"))
@@ -1148,10 +1155,10 @@ namespace StoryModeTrainerMod
             {
                 RemoveIplBatch(StoryInteriorsConflictingIpls);
                 RequestIplBatch(StoryInteriorsIpls);
-                _fibLobbyInteriorId = 0;
-                _coronerInteriorId = 0;
-                _lifeinvaderInteriorId = 0;
-                _ranchInteriorId = 0;
+                UnpinInteriorId(ref _fibLobbyInteriorId);
+                UnpinInteriorId(ref _coronerInteriorId);
+                UnpinInteriorId(ref _lifeinvaderInteriorId);
+                UnpinInteriorId(ref _ranchInteriorId);
             }
 
             ConfigureLoadedMapInteriors(forceRefresh: false);
@@ -1175,15 +1182,7 @@ namespace StoryModeTrainerMod
                     });
             }
 
-            if (SuperyachtLoaded)
-            {
-                EnsureSimpleInteriorHealthy(SuperyachtDeckCoords, ref _yachtInteriorId, forceRefresh);
-            }
-
-            if (AircraftCarrierLoaded)
-            {
-                EnsureSimpleInteriorHealthy(AircraftCarrierDeckCoords, ref _carrierInteriorId, forceRefresh);
-            }
+            // Superyacht and Aircraft Carrier deck coordinates are exterior IPL surfaces (GET_INTERIOR_AT_COORDS returns 0).
 
             if (NorthYanktonLoaded)
             {
@@ -1310,8 +1309,8 @@ namespace StoryModeTrainerMod
             }
             else
             {
-                Function.Call(Hash.SET_AMBIENT_ZONE_LIST_STATE_PERSISTENT, "AZL_DLC_Hei4_Island_Zones", false, false);
-                Function.Call(Hash.SET_AMBIENT_ZONE_LIST_STATE_PERSISTENT, "AZL_DLC_Hei4_Island_Disabled_Zones", true, false);
+                Function.Call(Hash.SET_AMBIENT_ZONE_LIST_STATE_PERSISTENT, "AZL_DLC_Hei4_Island_Zones", false, true);
+                Function.Call(Hash.SET_AMBIENT_ZONE_LIST_STATE_PERSISTENT, "AZL_DLC_Hei4_Island_Disabled_Zones", true, true);
                 Function.Call(Hash.SET_SCENARIO_GROUP_ENABLED, "Heist_Island_Peds", false);
                 Function.Call(Hash.SET_AUDIO_FLAG, "PlayerOnDLCHeist4Island", false);
                 Function.Call(Hash.LOAD_GLOBAL_WATER_FILE, 0);
@@ -1381,15 +1380,23 @@ namespace StoryModeTrainerMod
             _pendingStartupMpMapsUnlock = false;
             ExplicitMpMapsPreference = false;
 
-            if (CayoPericoLoaded) SetCayoPericoEnabled(false);
-            if (NorthYanktonLoaded) SetNorthYanktonEnabled(false);
-            if (DiamondCasinoLoaded) SetDiamondCasinoEnabled(false);
-            if (AircraftCarrierLoaded) SetAircraftCarrierEnabled(false);
-            if (SuperyachtLoaded) SetSuperyachtEnabled(false);
-            if (GunrunningBunkerLoaded) SetGunrunningBunkerEnabled(false);
-            if (DoomsdayFacilityLoaded) SetDoomsdayFacilityEnabled(false);
-            if (CargoShipLoaded) SetCargoShipEnabled(false);
-            if (StoryInteriorsLoaded) SetStoryInteriorsEnabled(false);
+            _isRevertingForCleanup = true;
+            try
+            {
+                if (CayoPericoLoaded) SetCayoPericoEnabled(false);
+                if (NorthYanktonLoaded) SetNorthYanktonEnabled(false);
+                if (DiamondCasinoLoaded) SetDiamondCasinoEnabled(false);
+                if (AircraftCarrierLoaded) SetAircraftCarrierEnabled(false);
+                if (SuperyachtLoaded) SetSuperyachtEnabled(false);
+                if (GunrunningBunkerLoaded) SetGunrunningBunkerEnabled(false);
+                if (DoomsdayFacilityLoaded) SetDoomsdayFacilityEnabled(false);
+                if (CargoShipLoaded) SetCargoShipEnabled(false);
+                if (StoryInteriorsLoaded) SetStoryInteriorsEnabled(false);
+            }
+            finally
+            {
+                _isRevertingForCleanup = false;
+            }
 
             for (int i = 0; i < _pinnedInteriors.Count; i++)
             {
@@ -1407,7 +1414,7 @@ namespace StoryModeTrainerMod
                 Function.Call(Hash.RESET_WORLD_BOUNDARY_FOR_PLAYER);
             }
 
-            if (_cayoPathNodesActive && IsPlayerSafelyAwayFromCayoPerico(Game.Player?.Character))
+            if (_cayoPathNodesActive)
             {
                 Function.Call(Hash.SET_ALLOW_STREAM_HEIST_ISLAND_NODES, 0);
                 _cayoPathNodesActive = false;
@@ -1460,7 +1467,7 @@ namespace StoryModeTrainerMod
         public bool IsInteriorReadyAt(Vector3 coords)
         {
             if (_isMultiplayerBlocked()) return false;
-            int id = EnsureInteriorPinnedAt(coords);
+            int id = PinInteriorAt(coords, refreshImmediately: false);
             return id != 0
                 && Function.Call<bool>(Hash.IS_VALID_INTERIOR, id)
                 && Function.Call<bool>(Hash.IS_INTERIOR_READY, id);
